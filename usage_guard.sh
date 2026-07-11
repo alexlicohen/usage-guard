@@ -28,6 +28,10 @@ STDIN='{"model":{"display_name":"x"},"workspace":{"current_dir":"'"$HOME"'"},"co
 
 fetch_raw() {                      # -> raw ccstatusline text on stdout (empty on failure)
   if [ -n "${UG_FETCH_FILE:-}" ]; then cat "$UG_FETCH_FILE" 2>/dev/null; return; fi
+  # Same resolution order as the live statusline (statusline-ccwrapper.sh): prefer the
+  # global install (pinned version, no network, no drift vs. what the statusline itself
+  # renders) before falling back to the npx cache or a live npx fetch.
+  if command -v ccstatusline >/dev/null 2>&1; then printf '%s' "$STDIN" | ccstatusline 2>/dev/null; return; fi
   if [ -n "$JS" ]; then printf '%s' "$STDIN" | node "$JS" 2>/dev/null
   else printf '%s' "$STDIN" | npx -y ccstatusline@latest 2>/dev/null; fi
 }

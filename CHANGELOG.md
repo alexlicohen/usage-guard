@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1 — 2026-07-10
+
+- **Fetch order fix.** `fetch_raw()` now tries the global `ccstatusline` binary first, matching
+  the resolution order the live statusline wrapper (`statusline-ccwrapper.sh`) has used since the
+  2026-07-02 switch to a global install. Previously the guard skipped straight to the npx cache /
+  `npx -y ccstatusline@latest`, which could read a different (drifted) version than the one
+  actually driving the statusline it's meant to mirror, and made the guard's fail-loud path
+  depend on network reachability even when a pinned global copy was available locally.
+
 ## 1.1.0 — 2026-07-02
 
 First public release, with a safety fix over the prior local version.
