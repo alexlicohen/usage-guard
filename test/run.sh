@@ -36,14 +36,41 @@ out=$(UG_FETCH_FILE="$tmp/good.txt" bash "$G" --once); c=$?
 has "--once readable -> prints Session%" "$out" "Session 92.0%"
 ec  "--once readable -> exit 0" "$c" 0
 
-out=$(UG_FETCH_FILE=/dev/null bash "$G" --once 2>&1); c=$?
-has "--once unreadable -> loud stderr" "$out" "cannot read session usage"
-ec  "--once unreadable -> exit 2 (fail-loud)" "$c" 2
+# empty read is a distinct (transient-likely) class from a format change; --once retries then
+# reports it as empty, still exit 2 (a one-shot can't wait out a transient window).
+out=$(UG_FETCH_FILE=/dev/null RETRIES=1 RETRY_BACKOFF=0 bash "$G" --once 2>&1); c=$?
+has "--once empty -> loud stderr" "$out" "cannot read session usage"
+has "--once empty -> names the transient cause, not a format bug" "$out" "transient"
+ec  "--once empty -> exit 2 (fail-loud)" "$c" 2
+
+# a genuine format change (rendered output, no Session: token) is reported as such, not as empty.
+printf '%s' "$DRIFT" > "$tmp/drift.txt"
+out=$(UG_FETCH_FILE="$tmp/drift.txt" RETRIES=1 RETRY_BACKOFF=0 bash "$G" --once 2>&1); c=$?
+has "--once unparseable -> names format change" "$out" "format changed"
+ec  "--once unparseable -> exit 2" "$c" 2
 
 echo "guard loop:"
-out=$(UG_FETCH_FILE=/dev/null INTERVAL=1 bash "$G" 2>&1); c=$?
-has "startup unreadable -> refuses to arm" "$out" "NOT ARMED"
-ec  "startup unreadable -> exit 2 (no blind loop)" "$c" 2
+# Transient-empty at startup is TOLERATED for BLIND_MAX_SEC, then exits 2 "never armed" — it does
+# NOT hard-exit 2 on the first empty poll (that was the false-positive re-arm bug). BLIND_MAX_SEC=0
+# collapses the window so the loud exit is immediate and deterministic here.
+out=$(UG_FETCH_FILE=/dev/null BLIND_MAX_SEC=0 RETRIES=1 RETRY_BACKOFF=0 INTERVAL=1 bash "$G" 2>&1); c=$?
+has "transient-empty at startup -> NOT ARMED after window" "$out" "NOT ARMED"
+has "transient-empty message names transient cause" "$out" "transient"
+ec  "transient-empty at startup -> exit 2" "$c" 2
+
+# A tolerance window > 0 must NOT bail on the very first empty poll (regression guard for the bug).
+if command -v timeout >/dev/null 2>&1; then
+  UG_FETCH_FILE=/dev/null BLIND_MAX_SEC=3600 RETRIES=1 RETRY_BACKOFF=0 INTERVAL=1 timeout 2 bash "$G" >/dev/null 2>&1; c=$?
+  ec "empty within window -> keeps guarding (timed out, not bailed)" "$c" 124
+else
+  echo "  skip - within-window tolerance (no 'timeout' on this host)"
+fi
+
+# A format change mid-poll is persistent -> fail loud immediately (no waiting out the window).
+out=$(UG_FETCH_FILE="$tmp/drift.txt" BLIND_MAX_SEC=3600 INTERVAL=1 bash "$G" 2>&1); c=$?
+has "startup format-change -> refuses to arm immediately" "$out" "NOT ARMED"
+has "startup format-change -> names format change" "$out" "format changed"
+ec  "startup format-change -> exit 2 (no wait)" "$c" 2
 
 printf ' Session: ▓ 98.0%%  Weekly: 45.0%% ' > "$tmp/high.txt"
 out=$(UG_FETCH_FILE="$tmp/high.txt" TRIP_PCT=97 INTERVAL=1 bash "$G"); c=$?

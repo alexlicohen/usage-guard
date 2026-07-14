@@ -35,17 +35,29 @@ Use before launching heavy work to decide whether there's headroom.
    (work-list derived from on-disk state); make the job resumable before relying on this.
 
 Tune: `TRIP_PCT` (default 97 — lower to 95 to widen the round-trip margin for fast-burning
-jobs), `INTERVAL` (default 15s), `WEEKLY_TRIP` (also trip on the weekly window). The 15s poll
-+ "stop now, commit later" keeps 97% safe even at heavy burn.
+jobs), `INTERVAL` (default 15s), `WEEKLY_TRIP` (also trip on the weekly window),
+`BLIND_MAX_SEC` (default 300 — how long a transiently-empty reader is tolerated before the
+loud exit). The 15s poll + "stop now, commit later" keeps 97% safe even at heavy burn.
 
 ## Notes / limits
 
-- **Fail-loud (a safety tool must never fail silent):** if ccstatusline is unavailable or
-  changes its output format, the reader returns empty. The guard then **refuses to arm at
-  startup (exit 2)** and **exits loud after `FAIL_MAX` consecutive blind polls (exit 3)**,
-  rather than looping forever pretending to protect you. `--once` exits 2 when usage is
-  unreadable. If you see `NOT ARMED` / `WENT BLIND`, fix the reader — do not trust the guard.
-  Exit codes: `0` tripped / read OK · `2` unreadable at startup · `3` went blind mid-run.
+- **Fail-loud, but not trigger-happy (a safety tool must never fail silent — and must never
+  cry wolf).** The reader can be unreadable for three different reasons, which get opposite
+  responses:
+  - **unavailable** (no `ccstatusline`/`node`/`npx`) or **format changed** (output rendered
+    but no `Session:…%` token) — persistent, won't self-heal → **fail loud immediately**
+    (refuses to arm, exit 2; or exits 3 if it happens mid-run).
+  - **empty render** — ccstatusline fetches `/api/oauth/usage` per poll and swallows errors,
+    so a transient network / token-refresh hiccup emits nothing. This is almost always
+    transient → the guard **retries within the poll** (`RETRIES`×, `RETRY_BACKOFF` apart) and
+    then **tolerates it for up to `BLIND_MAX_SEC` (default 300s)** before going loud, so a few
+    seconds of API flakiness can't false-stop a healthy multi-hour job. The loud message
+    reports the last-known-good reading so you know the guard was fine moments ago.
+
+  If you see `NOT ARMED` / `WENT BLIND`, read the message — it names which cause. `--once`
+  exits 2 on any non-ok read (a one-shot can't wait out a window) and names the cause.
+  Exit codes: `0` tripped / read OK · `2` never armed (unreadable at startup) · `3` went
+  blind mid-run.
 - **Reset:** the session % is the rolling 5-hour window; it stays high until old usage
   ages out. After a reset, headroom returns. Resuming *before* a reset when already high
   just trips again immediately.
