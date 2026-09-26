@@ -10,17 +10,30 @@ On plans where overflow is disabled, hitting the limit mid-run is a graceless ha
 that wastes credits on a failing tail. This guard trips with headroom so you can stop the
 job cleanly.
 
-Source of truth: [`ccstatusline`](https://www.npmjs.com/package/ccstatusline), which fetches
-Anthropic's `/api/oauth/usage`. The number matches the statusline's "Session" slider.
+Sources, in order:
+
+1. **Live** — `~/.cache/usage-guard/rate_limits.json`: the `rate_limits` object Claude Code
+   passes to your statusline command on stdin, saved by your statusline on every render
+   (see [Live source](#live-source-recommended)). These are exactly the numbers the
+   statusline shows. If the file exists it is the only source.
+2. **Fallback** (file absent) — [`ccstatusline`](https://www.npmjs.com/package/ccstatusline)
+   rendered with a synthetic stdin; it fetches Anthropic's `/api/oauth/usage` itself, or
+   serves its cache `~/.cache/ccstatusline/usage.json`.
+
+Every reading is **aged** (the live file's `ts`, or the ccstatusline cache's mtime). A reading
+older than `MAX_AGE_SEC` (default 300), or whose window's reset time has already passed, is
+reported as **stale**, never as a current number. (Without this gate, ccstatusline with no
+usable token serves its cache with no age limit, and a weeks-old reading passed as live.)
 
 ## One-off check
 
 ```sh
-bash usage_guard.sh --once     # -> "Session 92.0%  Weekly 45.0%"  (exit 0)
+bash usage_guard.sh --once     # -> "Session 92.0%  Weekly 45.0%  (live rate_limits, 4s old)"  (exit 0)
 ```
 
 Use before launching heavy work to decide whether there's headroom. Exits **2** (loud, to
-stderr) if usage can't be read.
+stderr, naming the cause; stdout `Session ?%  Weekly ?%`) if usage can't be read **or the
+reading is stale**.
 
 ## Guard a background job (the main use)
 
@@ -35,21 +48,49 @@ stderr) if usage can't be read.
    **resumable** (its work-list derives from on-disk state); make it resumable first.
 
 Tune via env: `TRIP_PCT` (default 97), `INTERVAL` (default 15s), `WEEKLY_TRIP` (also trip on
-the weekly window; default off), `FAIL_MAX` (consecutive blind polls before a loud exit).
+the weekly window; default off), `MAX_AGE_SEC` (default 300, oldest reading accepted as
+current), `BLIND_MAX_SEC` (default 300, how long a transient/stale reader is tolerated before
+the loud exit), `RETRIES` / `RETRY_BACKOFF` (in-poll retries, default 3 × 2s).
+
+## Live source (recommended)
+
+Claude Code passes a `rate_limits` object (`five_hour` / `seven_day`, each with
+`used_percentage` and epoch-seconds `resets_at`) to the statusline command on stdin. Add this
+to your statusline script, after it reads stdin into `$input`:
+
+```sh
+UG_DIR="$HOME/.cache/usage-guard"
+{ mkdir -p "$UG_DIR" &&
+  printf '%s' "$input" | jq -ce 'select(.rate_limits != null) | {ts: (now | floor), rate_limits}' > "$UG_DIR/.rate_limits.$$" &&
+  mv -f "$UG_DIR/.rate_limits.$$" "$UG_DIR/rate_limits.json"; } >/dev/null 2>&1 || rm -f "$UG_DIR/.rate_limits.$$" 2>/dev/null
+```
+
+One `jq` call (~10 ms), atomic write, errors swallowed so it can never break the render. The
+file only stays fresh while a Claude Code session is open and rendering the statusline (set
+`statusLine.refreshInterval` so it re-renders when idle); with no session open it ages out and
+the guard reports `stale`, which is the honest answer.
 
 ## Fail-loud (why this is safe)
 
-A usage guard that silently stops guarding is the worst failure mode — you'd think you're
-protected and blow past the limit. So if the underlying reader is unavailable or
-ccstatusline changes its output format:
+A usage guard that silently stops guarding, or trusts an old number, is the worst failure
+mode — you'd think you're protected and blow past the limit. Each read is classified:
 
-- **at startup** the guard refuses to arm — exit **2**, message on stderr — instead of
-  entering a loop that can never trip;
-- **mid-run** it exits **3** after `FAIL_MAX` consecutive unreadable polls rather than
-  looping blind.
+| Status | Cause | Response |
+|---|---|---|
+| `unavailable` | no reader (`ccstatusline`/`node`/`npx`, or `jq` for the live file) | persistent: fail loud now |
+| `nocreds` | ccstatusline renders `[No credentials]` | persistent: fail loud now |
+| `unparseable` | output has no `Session:…%` and no known error token | retried in-poll; then persistent (format change) |
+| `transient` | ccstatusline renders `[Timeout]` / `[API Error]` / `[Rate limited]` / `[Parse Error]` | retried in-poll; tolerated `BLIND_MAX_SEC` |
+| `empty` | reader rendered nothing | retried in-poll; tolerated `BLIND_MAX_SEC` |
+| `stale` | reading older than `MAX_AGE_SEC`, or its reset time has passed | tolerated `BLIND_MAX_SEC` |
 
-Exit codes: `0` armed-and-tripped (or `--once` read OK) · `2` couldn't read at startup ·
-`3` went blind mid-run.
+Persistent causes make the guard refuse to arm (exit **2**) or exit **3** mid-run at once;
+the tolerated ones do so only after `BLIND_MAX_SEC` without a fresh reading, so a few seconds
+of API flakiness can't false-stop a healthy multi-hour job. `--once` exits **2** on any non-ok
+status (a one-shot can't wait out a window).
+
+Exit codes: `0` armed-and-tripped (or `--once` fresh read) · `2` couldn't read, or stale, at
+startup (and every non-ok `--once`) · `3` went blind mid-run.
 
 ## Install
 
@@ -60,9 +101,13 @@ git clone https://github.com/alexlicohen/usage-guard.git ~/.claude/skills/usage-
 ## Tests
 
 `test/run.sh` exercises the parser and the guard logic deterministically — no ccstatusline,
-no network — via `--parse` (pure parser) and the `UG_FETCH_FILE` seam (feed raw text from a
-file). It covers ANSI stripping, `Session:`/`Weekly:` anchoring, **format-drift detection**,
-the fail-loud paths, and the trip threshold. CI runs `shellcheck` + the suite.
+no network, no GNU `timeout` (a perl watchdog; runs on macOS and Linux; needs `jq`) — via
+`--parse` (pure parser) and seams: `UG_RATE_FILE` (live file), `UG_CCSL_CACHE` (the cache
+whose mtime ages a fallback reading), `UG_FETCH_FILE` (raw text from a file) and
+`UG_FETCH_CMD` (raw text from a command, used for retry sequences). It covers ANSI stripping,
+segment anchoring (a `Session:` error never reads the `Weekly` number), format drift, error
+classification, the live source, both staleness gates, the fail-loud paths and the trip
+threshold. CI runs `shellcheck` + the suite.
 
 ## Notes / limits
 
@@ -70,8 +115,8 @@ the fail-loud paths, and the trip threshold. CI runs `shellcheck` + the suite.
   out. Resuming before a reset when already high just trips again.
 - **The guard only notifies — it does not kill anything itself.** You must stop the job on
   the trip.
-- **Surfaces:** works wherever a local `ccstatusline` is reachable (CLI, desktop Code tab).
-  It does not cover Claude Code cloud sessions (separate sandbox; no local creds).
+- **Surfaces:** works on the local CLI and desktop Code tab (both render the statusline and
+  can read `~/.cache`). It does not cover Claude Code cloud sessions (separate sandbox).
 
 ## License
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.3.0 — 2026-09-26
+
+- **Stop trusting stale numbers (safety fix).** `--once` had printed the same reading for two
+  weeks. The guard renders ccstatusline with a synthetic stdin that has no `rate_limits`, so
+  ccstatusline fetches `/api/oauth/usage` itself; with no usable token it serves its cache
+  `~/.cache/ccstatusline/usage.json` with no age limit, and the guard took that as live.
+  - **Live source first.** The statusline script saves Claude Code's stdin `rate_limits`
+    (verbatim, plus an epoch `ts`) to `~/.cache/usage-guard/rate_limits.json` on every render
+    (one `jq` call, atomic, errors swallowed; snippet in README). If that file exists it is the
+    only source (`jq` required); ccstatusline is the fallback only when it is absent.
+  - **Staleness gate.** Every reading carries an age (the file's `ts`, or the ccstatusline
+    cache's mtime). Older than `MAX_AGE_SEC` (default 300), a missing cache, or a `resets_at`
+    already in the past → new status `stale`. `--once` reports it loudly (stderr names source,
+    age and the stale numbers; stdout `Session ?%  Weekly ?%`) and exits 2; the loop treats it
+    like a blind reading (counts toward `BLIND_MAX_SEC`, not retried in-poll).
+  - `--once` success output gains the source and age: `Session 5%  Weekly 81%  (live rate_limits, 1s old)`.
+- **Error renders classified.** ccstatusline renders `[Timeout]` / `[API Error]` /
+  `[Rate limited]` / `[Parse Error]` in place of a failed usage segment → `transient` (retried
+  in-poll, then the blind window); `[No credentials]` → `nocreds` (persistent, fail loud
+  immediately). `unparseable` (no Session token, no error token) is now retried in-poll before
+  it counts as a format change: one render without the usage segment had refused to arm a
+  multi-hour job that parsed cleanly minutes later.
+- **Parser no longer crosses segments.** `Session: [API Error]  Weekly: 16%` read Session as
+  16. A segment now ends at its first `%` and is rejected if it holds another label or an error
+  token.
+- **Tests portable to macOS.** A perl alarm watchdog replaces GNU `timeout`; the two checks
+  that were skipped on macOS now run, and every guard-loop invocation is watchdogged so a
+  regression fails instead of hanging. New seams `UG_RATE_FILE`, `UG_CCSL_CACHE`,
+  `UG_FETCH_CMD` (retry sequences). Suite 19 → 78 checks, 0 skipped; `jq` now required.
+- Docs: README had still described the `FAIL_MAX` knob removed in 1.2.0; fixed.
+
 ## 1.2.0 — 2026-07-14
 
 - **Stop crying wolf on transient API blips (safety fix).** A long, healthy guard could false-trip
