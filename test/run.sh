@@ -155,8 +155,18 @@ ec  "live file stale by past reset -> exit 2" "$c" 2
 
 echo '{"ts":'"$NOW"',"rate_limits":{}}' > "$tmp/live-empty.json"
 out=$(UG_RATE_FILE="$tmp/live-empty.json" RETRIES=1 bash "$G" --once 2>&1); c=$?
-has "live file without five_hour -> unparseable" "$out" "(unparseable)"
+has "live file without five_hour -> transient (not unparseable)" "$out" "(transient)"
+has "missing-five_hour reason names the field" "$out" "five_hour.used_percentage"
 ec  "live file without five_hour -> exit 2" "$c" 2
+# The shape another session writes: seven_day only.
+jq -nc --argjson ts "$NOW" --argjson wr $((NOW + 86400)) \
+  '{ts:$ts, rate_limits:{seven_day:{used_percentage:23, resets_at:$wr}}}' > "$tmp/live-7d.json"
+out=$(UG_RATE_FILE="$tmp/live-7d.json" RETRIES=1 bash "$G" --once 2>&1); c=$?
+has "seven_day-only record -> transient" "$out" "(transient)"
+ec  "seven_day-only record -> exit 2" "$c" 2
+printf 'not json' > "$tmp/live-bad.json"
+out=$(UG_RATE_FILE="$tmp/live-bad.json" RETRIES=1 RETRY_BACKOFF=0 bash "$G" --once 2>&1); c=$?
+has "invalid JSON live file -> still unparseable" "$out" "(unparseable)"
 
 echo "retry sequences (UG_FETCH_CMD seam):"
 cmd=$(seqcmd a "$DRIFT" "$GOOD")
@@ -218,6 +228,24 @@ ec  "startup format-change -> exit 2 (no wait)" "$c" 2
 out=$(UG_FETCH_FILE="$tmp/nocred.txt" BLIND_MAX_SEC=3600 INTERVAL=1 wd 10 bash "$G" 2>&1); c=$?
 has "startup nocreds -> refuses to arm immediately" "$out" "NOT ARMED"
 ec  "startup nocreds -> exit 2 (no wait)" "$c" 2
+
+# Regression (2026-09-30): two statusline writers alternate a full record and a seven_day-only
+# one on the same file. Armed on the full record, the guard must ride out the partial one as
+# blind (not exit 3 as a persistent unparseable), recover when the full record returns, and
+# still go loud if the partial record outlasts BLIND_MAX_SEC.
+alt="$tmp/live-alt.json"
+live "$alt" "$NOW" 20 50 $((NOW + 3600)) $((NOW + 86400))
+( sleep 2; cp "$tmp/live-7d.json" "$alt"; sleep 3; live "$alt" "$(date +%s)" 20 50 $((NOW + 3600)) $((NOW + 86400)) ) &
+UG_RATE_FILE="$alt" BLIND_MAX_SEC=3600 RETRIES=1 INTERVAL=1 wd 8 bash "$G" >/dev/null 2>&1; c=$?
+wait
+ec "alternating full / seven_day-only records -> keeps guarding (timed out, not exit 3)" "$c" "$TIMED_OUT"
+live "$alt" "$NOW" 20 50 $((NOW + 3600)) $((NOW + 86400))
+( sleep 2; cp "$tmp/live-7d.json" "$alt" ) &
+out=$(UG_RATE_FILE="$alt" BLIND_MAX_SEC=2 RETRIES=1 INTERVAL=1 wd 12 bash "$G" 2>&1); c=$?
+wait
+has "partial record past BLIND_MAX_SEC -> WENT BLIND" "$out" "WENT BLIND"
+has "WENT BLIND names the missing field" "$out" "five_hour.used_percentage"
+ec  "partial record past BLIND_MAX_SEC -> exit 3" "$c" 3
 
 printf '%s' "$HIGH" > "$tmp/high.txt"
 out=$(UG_FETCH_FILE="$tmp/high.txt" TRIP_PCT=97 INTERVAL=1 wd 10 bash "$G"); c=$?

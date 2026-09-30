@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.1 — 2026-09-30
+
+- **Partial live records no longer kill the guard.** Several sessions render the statusline at
+  once and write the same file (last writer wins); some pass a `rate_limits` holding only
+  `seven_day` (with a different weekly %), which held the file for 20–30 s at a time. The guard
+  classified a record without `five_hour` as `unparseable` (persistent) and exited 3 minutes
+  after arming, with usage fine. Fixes:
+  - **Guard:** valid JSON without `rate_limits.five_hour.used_percentage` is now `transient`
+    (retried in-poll, then tolerated for `BLIND_MAX_SEC`); a renamed field still goes loud once
+    the window elapses. Invalid JSON stays `unparseable`.
+  - **Writer (README snippet):** writes only records whose `five_hour.used_percentage` is a
+    number, so a partial record can never overwrite a full one.
+  - Tests: seven_day-only record, invalid JSON, and a guard loop over alternating full /
+    partial records (rides it out; still exits 3 past `BLIND_MAX_SEC`). 86 checks.
+
 ## 1.3.0 — 2026-09-26
 
 - **Stop trusting stale numbers (safety fix).** `--once` had printed the same reading for two

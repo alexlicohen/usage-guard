@@ -58,7 +58,7 @@ jobs), `INTERVAL` (default 15s), `WEEKLY_TRIP` (also trip on the weekly window),
     within the poll (one unlucky render must not refuse to arm a long job); still unparseable
     after `RETRIES` = a format change → fail loud immediately.
   - **transient** (ccstatusline renders `[Timeout]` / `[API Error]` / `[Rate limited]` /
-    `[Parse Error]`) and **empty** (renders nothing) — retried within the poll (`RETRIES`×,
+    `[Parse Error]`, or the live file lacks `rate_limits.five_hour`) and **empty** (renders nothing) — retried within the poll (`RETRIES`×,
     `RETRY_BACKOFF` apart), then **tolerated for up to `BLIND_MAX_SEC`** before going loud.
   - **stale** (reading older than `MAX_AGE_SEC`, or its reset time already passed) — not
     retried in-poll (can't heal in seconds); tolerated for `BLIND_MAX_SEC` like transient.

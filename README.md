@@ -61,11 +61,14 @@ to your statusline script, after it reads stdin into `$input`:
 ```sh
 UG_DIR="$HOME/.cache/usage-guard"
 { mkdir -p "$UG_DIR" &&
-  printf '%s' "$input" | jq -ce 'select(.rate_limits != null) | {ts: (now | floor), rate_limits}' > "$UG_DIR/.rate_limits.$$" &&
+  printf '%s' "$input" | jq -ce 'select(.rate_limits.five_hour.used_percentage | type == "number") | {ts: (now | floor), rate_limits}' > "$UG_DIR/.rate_limits.$$" &&
   mv -f "$UG_DIR/.rate_limits.$$" "$UG_DIR/rate_limits.json"; } >/dev/null 2>&1 || rm -f "$UG_DIR/.rate_limits.$$" 2>/dev/null
 ```
 
-One `jq` call (~10 ms), atomic write, errors swallowed so it can never break the render. The
+One `jq` call (~10 ms), atomic write, errors swallowed so it can never break the render.
+It writes only records that carry `five_hour.used_percentage`: several sessions render at once
+(last writer wins), and some pass `rate_limits` with only `seven_day` (a different weekly %);
+letting those overwrite a full record blinded the guard. The
 file only stays fresh while a Claude Code session is open and rendering the statusline (set
 `statusLine.refreshInterval` so it re-renders when idle); with no session open it ages out and
 the guard reports `stale`, which is the honest answer.
@@ -80,7 +83,7 @@ mode — you'd think you're protected and blow past the limit. Each read is clas
 | `unavailable` | no reader (`ccstatusline`/`node`/`npx`, or `jq` for the live file) | persistent: fail loud now |
 | `nocreds` | ccstatusline renders `[No credentials]` | persistent: fail loud now |
 | `unparseable` | output has no `Session:…%` and no known error token | retried in-poll; then persistent (format change) |
-| `transient` | ccstatusline renders `[Timeout]` / `[API Error]` / `[Rate limited]` / `[Parse Error]` | retried in-poll; tolerated `BLIND_MAX_SEC` |
+| `transient` | ccstatusline renders `[Timeout]` / `[API Error]` / `[Rate limited]` / `[Parse Error]`; or the live file lacks `rate_limits.five_hour` | retried in-poll; tolerated `BLIND_MAX_SEC` |
 | `empty` | reader rendered nothing | retried in-poll; tolerated `BLIND_MAX_SEC` |
 | `stale` | reading older than `MAX_AGE_SEC`, or its reset time has passed | tolerated `BLIND_MAX_SEC` |
 

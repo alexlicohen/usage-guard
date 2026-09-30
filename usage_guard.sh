@@ -34,8 +34,9 @@
 #                    within the poll (one unlucky render must not refuse to arm a multi-hour job);
 #                    still unparseable after RETRIES = a format change -> fail loud immediately.
 #   * transient    — ccstatusline rendered `[Timeout]` / `[API Error]` / `[Rate limited]` /
-#                    `[Parse Error]` instead of a Session %. Retried within the poll, then
-#                    tolerated for BLIND_MAX_SEC.
+#                    `[Parse Error]` instead of a Session %, or the live file is valid JSON
+#                    without rate_limits.five_hour. Retried within the poll, then tolerated for
+#                    BLIND_MAX_SEC.
 #   * empty        — the reader rendered NOTHING. Transient, same handling as `transient`.
 #   * stale        — see above. Not retried within a poll (it cannot heal in seconds); counts
 #                    toward BLIND_MAX_SEC like empty/transient, then fails loud.
@@ -154,7 +155,11 @@ read_live() {
   IFS='|' read -r ts S W sr wr <<EOF
 $out
 EOF
-  if [ -z "$S" ]; then STATUS=unparseable; WHY="$RATE_FILE has no rate_limits.five_hour.used_percentage"; return; fi
+  # Valid JSON without a 5-hour % is a DATA condition, not a format change: another session's
+  # record that carries only seven_day (seen live alternating with full records, ~20-30 s at a
+  # time), or a window that just reset. Blind (retried in-poll, then BLIND_MAX_SEC), never
+  # persistent — a renamed field still fails loud once the window elapses.
+  if [ -z "$S" ]; then STATUS=transient; WHY="$RATE_FILE has no rate_limits.five_hour.used_percentage (a record without the 5-hour window: another session's partial write, a just-reset window, or a format change)"; return; fi
   if ! isnum "$ts"; then STATUS=stale; WHY="$RATE_FILE has no ts, so its age is unknown"; return; fi
   gate_age "$ts" "$sr" "$wr"
 }
