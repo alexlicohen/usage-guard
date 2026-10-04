@@ -1,6 +1,14 @@
 ---
 name: usage-guard
-description: Read or watch the live 5-hour "session" usage % (the number in the statusline) and cleanly stop a long-running background job before it hits the hard usage limit. Use when launching or supervising a long autonomous background job (a Workflow, a big batch of Task agents, a long render/build loop) — especially on Max plans where overflow is disabled and hitting the limit is a graceless hard stop. Triggers: "guard the usage", "stop before the limit", "watch my 5h usage", "don't blow past my credits", or any time you start a multi-hour background job and want a safety net.
+description: >-
+  Read or watch the live 5-hour "session" usage % (the number in the statusline; `--once`
+  also prints the Weekly %, which triage rule 5 and bake-off pauses read) and cleanly stop a
+  long-running background job before it hits the hard usage limit. Use when launching or
+  supervising a long autonomous background job (a Workflow, a big batch of Task agents, a
+  long render/build loop) — especially on Max plans where overflow is disabled and hitting
+  the limit is a graceless hard stop. Triggers: "guard the usage", "stop before the limit",
+  "watch my 5h usage", "don't blow past my credits", or any time you start a multi-hour
+  background job and want a safety net.
 ---
 
 # usage-guard

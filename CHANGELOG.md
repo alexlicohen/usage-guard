@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2 — 2026-10-04
+
+- SKILL.md description is a folded block scalar (strict YAML rejected the bare `Triggers: "…"`) and names `--once`'s Weekly % (read by triage rule 5 and bake-off pauses).
+
 ## 1.3.1 — 2026-09-30
 
 - **Partial live records no longer kill the guard.** Several sessions render the statusline at
